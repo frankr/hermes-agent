@@ -2022,7 +2022,7 @@ class AIAgent:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
-                if _mem_provider_name:
+                if _mem_provider_name and _mem_provider_name.strip():
                     from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
@@ -4347,6 +4347,21 @@ class AIAgent:
                     # owns the loop and the agent-loop tools dispatch.
                     if _parent_api_mode == "codex_app_server":
                         _parent_api_mode = "codex_responses"
+                    # skip_memory=True keeps the review fork from
+                    # touching external memory plugins (honcho, mem0,
+                    # supermemory, etc.).  Without it, the fork's
+                    # __init__ rebuilds its own _memory_manager from
+                    # config, scoped to the parent's session_id, and
+                    # run_conversation() then leaks the harness prompt
+                    # into the user's real memory namespace via three
+                    # ingestion sites: on_turn_start (cadence + turn
+                    # message), prefetch_all (recall query), and
+                    # sync_all (harness prompt + review output recorded
+                    # as a (user, assistant) turn pair).  Built-in
+                    # MEMORY.md / USER.md state is re-bound from the
+                    # parent below so memory(action="add") writes from
+                    # the review still land on disk; the review just
+                    # has zero side effects on external providers.
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=16,
@@ -4358,6 +4373,7 @@ class AIAgent:
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
+                        skip_memory=True,
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -9169,6 +9185,7 @@ class AIAgent:
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
                     config_context_length=getattr(self, "_config_context_length", None),
+                    custom_providers=self._custom_providers,
                 )
                 self.context_compressor.update_model(
                     model=self.model,
@@ -10096,6 +10113,7 @@ class AIAgent:
             "openai/",
             "x-ai/",
             "google/gemini-2",
+            "google/gemma-4",
             "qwen/qwen3",
             "tencent/hy3-preview",
             "xiaomi/",
@@ -10393,12 +10411,16 @@ class AIAgent:
         Kimi ``/coding`` and Moonshot thinking mode both require
         ``reasoning_content`` on every assistant tool-call message; omitting
         it causes the next replay to fail with HTTP 400.
+
+        Also detects Kimi models served through third-party providers (e.g.
+        ollama-cloud) by matching ``kimi`` in the model name.
         """
         return (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or "kimi" in (self.model or "").lower()
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:
