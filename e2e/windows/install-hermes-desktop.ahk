@@ -74,11 +74,12 @@ ClickCenterOfImageInWindow(winTitle, imageFile, timeoutMs := 10000, intervalMs :
 
     timeLeft := 1
 
-    ToolTip(Format("Searching for button file {} in window {}...  {}s left", imageFile, winTitle, Round(timeLeft / 1000, 2)))
-
+    Log(Format("Searching for button file {} in window {}...  {}s left", imageFile, winTitle, Round(timeLeft / 1000, 2)))
+    searchImage := Format("*10 {}", imageFile)
+    Log("SearchImage: " searchImage)
     while (timeLeft > 0)
     {
-        if ImageSearch(&x, &y, wx, wy, wx + ww, wy + wh, Format("*10 {}", imageFile))
+        if ImageSearch(&x, &y, wx, wy, wx + ww, wy + wh, searchImage)
         {
             ClickWithMarker(x + Floor(width / 2), y + Floor(height / 2))
             Log("Found button!")
