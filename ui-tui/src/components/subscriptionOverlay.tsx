@@ -203,11 +203,22 @@ function stepUpDenialResult(res: { error?: string; message?: string }): Subscrip
 
 // ── Scope-aware routing (shared by the picker, confirm, overview + step-up) ──
 
+// A REPEAT scope denial during a post-grant replay must NOT route back to the
+// stepup screen: we're already mounted there (in the 'resuming' phase), so an
+// onPatch({screen:'stepup'}) is a no-op that never remounts → the screen freezes.
+// Post-grant replays pass allowStepUp=false and surface this instead (mirrors the
+// CLI's allow_stepup=False cap).
+const scopeStillDeniedResult: SubscriptionResult = {
+  message: 'Terminal billing still isn’t enabled for this org — enable it on the portal, then retry.',
+  ok: false
+}
+
 /** Preview a tier and route: confirm (ok), stepup (scope), or result (other error). */
 function previewAndRoute(
   ctx: SubscriptionOverlayState['ctx'],
   tierId: string,
-  onPatch: ScreenProps['onPatch']
+  onPatch: ScreenProps['onPatch'],
+  allowStepUp = true
 ): Promise<void> {
   return ctx.preview(tierId).then(p => {
     if (!p) {
@@ -216,7 +227,9 @@ function previewAndRoute(
 
     if (!p.ok) {
       if (isScopeDenial(p)) {
-        return onPatch({ screen: 'stepup', stepUpRetry: { kind: 'preview', tierId } })
+        return allowStepUp
+          ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'preview', tierId } })
+          : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
       }
 
       return onPatch({ result: errorResult(p), screen: 'result' })
@@ -242,13 +255,21 @@ function previewAndRoute(
 function applyPendingAndRoute(
   ctx: SubscriptionOverlayState['ctx'],
   pending: null | SubscriptionPendingChange,
-  onPatch: ScreenProps['onPatch']
+  onPatch: ScreenProps['onPatch'],
+  allowStepUp = true
 ): Promise<void> {
   if (!pending) {
+    // Nothing to apply (defensive) — return to the overview rather than stranding.
+    onPatch({ screen: 'overview' })
+
     return Promise.resolve()
   }
 
-  const toStepUp = () => onPatch({ screen: 'stepup', stepUpRetry: { kind: 'apply' } })
+  const toStepUp = () =>
+    allowStepUp
+      ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'apply' } })
+      : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
+
   const finish = (result: SubscriptionResult) => onPatch({ result, screen: 'result' })
 
   if (pending.kind === 'cancellation') {
@@ -271,12 +292,16 @@ function applyPendingAndRoute(
 }
 
 /** Resume (undo the pending change) and route: result (ok/err) or stepup (scope). */
-function resumeAndRoute(ctx: SubscriptionOverlayState['ctx'], onPatch: ScreenProps['onPatch']): Promise<void> {
-  return ctx.resume().then(r =>
-    isScopeDenial(r)
-      ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'resume' } })
-      : onPatch({ result: mutationResult(r, 'Your pending change was undone — you stay on your current plan.'), screen: 'result' })
-  )
+function resumeAndRoute(ctx: SubscriptionOverlayState['ctx'], onPatch: ScreenProps['onPatch'], allowStepUp = true): Promise<void> {
+  return ctx.resume().then(r => {
+    if (isScopeDenial(r)) {
+      return allowStepUp
+        ? onPatch({ screen: 'stepup', stepUpRetry: { kind: 'resume' } })
+        : onPatch({ result: scopeStillDeniedResult, screen: 'result' })
+    }
+
+    return onPatch({ result: mutationResult(r, 'Your pending change was undone — you stay on your current plan.'), screen: 'result' })
+  })
 }
 
 // ── The pending scheduled change (drives the banner + status echo) ──
@@ -726,15 +751,17 @@ function StepUpScreen({ onPatch, overlay, t }: ScreenProps) {
       return onPatch({ screen: 'overview' })
     }
 
+    // allowStepUp=false: a repeat scope denial surfaces a result, never a frozen
+    // re-entry into this (already-mounted) stepup screen.
     if (retry.kind === 'preview') {
-      return void previewAndRoute(ctx, retry.tierId, onPatch)
+      return void previewAndRoute(ctx, retry.tierId, onPatch, false)
     }
 
     if (retry.kind === 'resume') {
-      return void resumeAndRoute(ctx, onPatch)
+      return void resumeAndRoute(ctx, onPatch, false)
     }
 
-    return void applyPendingAndRoute(ctx, overlay.pending ?? null, onPatch)
+    return void applyPendingAndRoute(ctx, overlay.pending ?? null, onPatch, false)
   }
 
   const back = () => {
