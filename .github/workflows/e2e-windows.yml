@@ -10,8 +10,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # this is separated so we don't have node.js and stuff
+  # this is separated so we don't have node.js and stuff polluting the system
   build-installer:
+    if: false # NOTE: build-installer is disabled for now, since we don't ship updates to the installer. when we do, re-enable it.
     name: Build Hermes-Setup.exe
     runs-on: windows-latest
     timeout-minutes: 30
@@ -89,8 +90,8 @@ jobs:
           Write-Host "Normalized installer: Hermes-Setup.exe (from $installer)"
 
   e2e:
-    name: Run installer test
-    needs: build-installer
+    name: Install this commit as latest main
+    # needs: build-installer
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -106,11 +107,18 @@ jobs:
           path: source
 
       - name: Restore installer from build cache
+        if: false # build-installer is since we don't update the installer right now. instead, we download the latest installer from the website
         id: installer-cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: Hermes-Setup.exe
           key: hermes-installer-built-cache-${{ runner.os }}-${{ hashFiles('source/package-lock.json', 'source/apps/bootstrap-installer/**', '!source/apps/bootstrap-installer/src-tauri/target/**') }}
+
+      - name: Download latest production installer
+        id: download-installer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://hermes-assets.nousresearch.com/Hermes-Setup.exe -OutFile Hermes-Setup.exe
 
       - name: Restore cached test tools
         id: test-tools-cache
