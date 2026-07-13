@@ -5,6 +5,27 @@ defines the goal and the **measurable gates** that must pass, in order, for
 the system to be considered race-ready and then successful. Each gate is
 pass/fail with numbers — no gate is "done" by code review alone.
 
+## Build status (2026-07-13)
+
+Phases 1–4 are **code-complete and tested** (71 tests: unit + real-browser
+drill/confirm/self-heal against an in-process fake shop). What remains is
+not code — it's operator data and live-environment measurement that can
+only be produced from a residential machine:
+
+| Gate | Code | Blocked on |
+|---|---|---|
+| G0.1/0.3 grid parse + caps | ✅ `recon-grid` | run once from home |
+| G0.2 checkout selectors | ✅ `recon-checkout` recorder | one manual walk |
+| G0.4 transport viability | ✅ `probe` | run on deploy box |
+| G1 detection/alert | ✅ watcher+notify | 72 h live soak |
+| G2 strike rehearsal | ✅ buyer drill mode | needs verified flightplan (G0.2) |
+| G3 guardrails/confirm | ✅ tested green | G3.4 = one real cheap buy |
+| G4 supervision/self-heal | ✅ tested green | live induced-failure timing |
+
+The single gate that unblocks live purchasing is **G0.2** (real
+selectors → `flightplan.yaml` → `verified: true`). Until then the buyer
+runs drills and the guardrails refuse to arm.
+
 ## Ultimate goal
 
 > **Place a confirmed Apple order for one refurbished Mac Studio M3 Ultra —

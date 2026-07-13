@@ -49,6 +49,36 @@ CREATE TABLE IF NOT EXISTS polls (
 );
 CREATE INDEX IF NOT EXISTS idx_polls_ts ON polls (ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_part_ts ON alerts (part_number, ts);
+CREATE TABLE IF NOT EXISTS drills (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    mode        TEXT NOT NULL,           -- drill | live
+    ok          INTEGER NOT NULL,
+    duration_ms REAL,
+    failed_step TEXT,
+    notes       TEXT
+);
+CREATE TABLE IF NOT EXISTS purchases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    part_number TEXT NOT NULL,
+    price_usd   REAL,
+    order_ref   TEXT,
+    mode        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checks (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind   TEXT NOT NULL,                -- session | heartbeat
+    ts     REAL NOT NULL,
+    ok     INTEGER NOT NULL,
+    notes  TEXT
+);
+CREATE TABLE IF NOT EXISTS race_ready (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL NOT NULL,
+    ready   INTEGER NOT NULL,
+    reasons TEXT
+);
 """
 
 
@@ -161,7 +191,112 @@ class StateDB:
             "avg_latency_ms": avg_latency,
         }
 
+    # -- drills / purchases / checks (Phase 2+) -----------------------------
+
+    def record_drill(
+        self,
+        mode: str,
+        ok: bool,
+        duration_ms: Optional[float] = None,
+        failed_step: Optional[str] = None,
+        notes: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO drills (ts, mode, ok, duration_ms, failed_step, notes)"
+            " VALUES (?,?,?,?,?,?)",
+            (now or time.time(), mode, int(ok), duration_ms, failed_step, notes),
+        )
+        self._conn.commit()
+
+    def last_passing_drill_age_h(self, now: Optional[float] = None) -> Optional[float]:
+        row = self._conn.execute(
+            "SELECT MAX(ts) FROM drills WHERE ok = 1 AND mode = 'drill'"
+        ).fetchone()
+        if not row or row[0] is None:
+            return None
+        return ((now or time.time()) - row[0]) / 3600
+
+    def consecutive_passing_drills(self) -> int:
+        """Gate 2.1: passing streak of the most recent drills."""
+        streak = 0
+        for (ok,) in self._conn.execute(
+            "SELECT ok FROM drills WHERE mode = 'drill' ORDER BY ts DESC"
+        ):
+            if not ok:
+                break
+            streak += 1
+        return streak
+
+    def record_purchase(
+        self,
+        part_number: str,
+        price_usd: Optional[float],
+        order_ref: Optional[str],
+        mode: str,
+        now: Optional[float] = None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO purchases (ts, part_number, price_usd, order_ref, mode)"
+            " VALUES (?,?,?,?,?)",
+            (now or time.time(), part_number, price_usd, order_ref, mode),
+        )
+        self._conn.commit()
+
+    def purchase_count(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0]
+
+    def record_check(
+        self, kind: str, ok: bool, notes: Optional[str] = None, now: Optional[float] = None
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO checks (kind, ts, ok, notes) VALUES (?,?,?,?)",
+            (kind, now or time.time(), int(ok), notes),
+        )
+        self._conn.commit()
+
+    def last_check(self, kind: str) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT ts, ok, notes FROM checks WHERE kind = ? ORDER BY ts DESC LIMIT 1",
+            (kind,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"ts": row[0], "ok": bool(row[1]), "notes": row[2]}
+
+    def last_poll_ts(self) -> Optional[float]:
+        row = self._conn.execute("SELECT MAX(ts) FROM polls WHERE ok = 1").fetchone()
+        return row[0] if row else None
+
+    def record_race_ready(
+        self, ready: bool, reasons: list[str], now: Optional[float] = None
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO race_ready (ts, ready, reasons) VALUES (?,?,?)",
+            (now or time.time(), int(ready), "; ".join(reasons)),
+        )
+        self._conn.commit()
+
+    def race_ready_rate(self, window_h: float = 168.0, now: Optional[float] = None) -> Optional[float]:
+        """The operational SLO number (target ≥ 0.95)."""
+        now = now or time.time()
+        row = self._conn.execute(
+            "SELECT COUNT(*), SUM(ready) FROM race_ready WHERE ts > ?",
+            (now - window_h * 3600,),
+        ).fetchone()
+        total, ready = row
+        return (ready / total) if total else None
+
     def summary(self) -> dict:
         sightings = self._conn.execute("SELECT COUNT(*) FROM sightings").fetchone()[0]
         alerts = self._conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
-        return {"sightings": sightings, "alerts": alerts, **self.poll_stats()}
+        drill_age = self.last_passing_drill_age_h()
+        return {
+            "sightings": sightings,
+            "alerts": alerts,
+            "purchases": self.purchase_count(),
+            "drill_streak": self.consecutive_passing_drills(),
+            "last_passing_drill_age_h": drill_age,
+            "race_ready_rate_7d": self.race_ready_rate(),
+            **self.poll_stats(),
+        }

@@ -5,8 +5,14 @@
   targets     dry-run the matcher against a HAR/HTML capture
   test-alert  verify Telegram/Twilio delivery end to end
   inject      gate 1.3: drop a synthetic matching tile into a running watcher
-  watch       run the detection loop
+  watch       run the detection loop (wires the buyer when mode != alert-only)
   status      gates 1.1/1.2: poll success rate, block events, alert history
+  drill       gates 2.1/2.2: rehearse the strike path up to the final button
+  session-check  gate 2.3/4.2: verify the Apple ID session is still valid
+  heartbeat   gate 4.1: watcher liveness
+  race-ready  compute + log the operational SLO snapshot
+  flightplan  validate flightplan.yaml, show verified/placeholder status
+  learn-windows  gate 4.4: recompute hot hours from sighting history
 """
 
 from __future__ import annotations
@@ -26,6 +32,27 @@ from .transport import fetch, have_impersonation
 
 DEFAULT_STATE_DIR = Path.home() / ".mac_studio_sniper"
 DEFAULT_TARGETS = Path(__file__).parent / "targets.yaml"
+DEFAULT_FLIGHTPLAN = Path(__file__).parent / "flightplan.yaml"
+DEFAULT_PROFILE = Path.home() / ".mac_studio_sniper" / "browser-profile"
+
+
+def _build_buyer(args: argparse.Namespace, config, state):
+    from .buyer import Buyer
+    from .flightplan import Flightplan
+    from .interact import build_interactor
+
+    state_dir = Path(args.state_dir)
+    return Buyer(
+        config=config,
+        flightplan=Flightplan.load(Path(args.flightplan)),
+        state=state,
+        notifier=Notifier(),
+        interactor=build_interactor(state_dir),
+        state_dir=state_dir,
+        profile_dir=Path(getattr(args, "profile_dir", DEFAULT_PROFILE)),
+        browser_path=getattr(args, "browser_path", None),
+        headless=not getattr(args, "headed", False),
+    )
 
 
 def _load_capture(args: argparse.Namespace) -> ParseReport:
@@ -168,22 +195,132 @@ def cmd_watch(args: argparse.Namespace) -> int:
     )
     state_dir = Path(args.state_dir)
     config = SniperConfig.load(Path(args.targets))
-    if config.mode not in ("alert-only",):
-        print(
-            f"mode '{config.mode}' requested but the buyer is not implemented yet"
-            " (Phase 2) — running alert-only.",
-            file=sys.stderr,
-        )
+    state = StateDB(state_dir / "state.sqlite")
+
+    on_match = None
+    if config.mode in ("confirm", "full-auto"):
+        buyer = _build_buyer(args, config, state)
+
+        async def on_match(match):
+            # The buyer re-checks every guardrail at strike time; a blocked
+            # arm degrades to alert-only (the alert already fired).
+            await buyer.attempt_purchase(match)
+
+        print(f"buyer armed in {config.mode!r} mode (guardrails enforced at strike time)")
+    else:
+        print(f"mode {config.mode!r}: alert-only, buyer not wired")
+
     watcher = Watcher(
         config=config,
-        state=StateDB(state_dir / "state.sqlite"),
+        state=state,
         notifier=Notifier(),
         state_dir=state_dir,
+        on_match=on_match,
     )
     try:
         asyncio.run(watcher.run())
     except KeyboardInterrupt:
         print("watcher stopped")
+    return 0
+
+
+def cmd_drill(args: argparse.Namespace) -> int:
+    import asyncio
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    config = SniperConfig.load(Path(args.targets))
+    state = StateDB(Path(args.state_dir) / "state.sqlite")
+    buyer = _build_buyer(args, config, state)
+    url = args.url or buyer.flightplan.drill_grid_url
+    if not url:
+        print("no drill URL: pass --url or set drill_grid_url in flightplan.yaml", file=sys.stderr)
+        return 1
+    result = asyncio.run(buyer.drill(url))
+    print(f"drill {'PASS' if result.ok else 'FAIL'} in {result.duration_ms:.0f}ms")
+    if result.step_timings_ms:
+        for sid, ms in result.step_timings_ms.items():
+            print(f"  {sid:22s} {ms:7.0f}ms")
+    if not result.ok:
+        print(f"  failed at {result.failed_step}: {result.error}", file=sys.stderr)
+        print(f"  artifacts: {result.artifacts_dir}", file=sys.stderr)
+    streak = state.consecutive_passing_drills()
+    print(f"consecutive passing drills: {streak}  (gate 2.1 needs 7)")
+    return 0 if result.ok else 1
+
+
+def cmd_session_check(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from .supervisor import Supervisor
+    from .flightplan import Flightplan
+
+    config = SniperConfig.load(Path(args.targets))
+    state = StateDB(Path(args.state_dir) / "state.sqlite")
+    sup = Supervisor(
+        config, Flightplan.load(Path(args.flightplan)), state, Notifier(), Path(args.state_dir)
+    )
+    ok = asyncio.run(sup.session_check(Path(args.profile_dir), browser_path=args.browser_path))
+    print(f"session check: {'VALID' if ok else 'INVALID'}")
+    return 0 if ok else 1
+
+
+def cmd_heartbeat(args: argparse.Namespace) -> int:
+    from .supervisor import Supervisor
+    from .flightplan import Flightplan
+
+    config = SniperConfig.load(Path(args.targets))
+    state = StateDB(Path(args.state_dir) / "state.sqlite")
+    sup = Supervisor(
+        config, Flightplan.load(Path(args.flightplan)), state, Notifier(), Path(args.state_dir)
+    )
+    ok = sup.heartbeat()
+    print(f"heartbeat: {'OK' if ok else 'STALE'}")
+    return 0 if ok else 1
+
+
+def cmd_race_ready(args: argparse.Namespace) -> int:
+    from .supervisor import Supervisor
+    from .flightplan import Flightplan
+
+    config = SniperConfig.load(Path(args.targets))
+    state = StateDB(Path(args.state_dir) / "state.sqlite")
+    sup = Supervisor(
+        config, Flightplan.load(Path(args.flightplan)), state, Notifier(), Path(args.state_dir)
+    )
+    rr = sup.race_ready_snapshot()
+    print(rr.render())
+    rate = state.race_ready_rate()
+    if rate is not None:
+        print(f"7-day race-ready rate: {rate:.3f}  (SLO ≥ 0.95: {'PASS' if rate >= 0.95 else 'FAIL'})")
+    return 0 if rr.ready else 1
+
+
+def cmd_flightplan(args: argparse.Namespace) -> int:
+    from .flightplan import Flightplan
+
+    fp = Flightplan.load(Path(args.flightplan))
+    print(f"version: {fp.version}   verified: {fp.verified}")
+    print(f"steps: {len(fp.steps)}   final step: {fp.final_step.id if fp.final_step else '(none)'}")
+    for s in fp.steps:
+        mark = "  final" if s.final else ""
+        opt = " (optional)" if s.optional else ""
+        print(f"  {s.id:22s} {s.action:7s} selectors={len(s.selectors)}{opt}{mark}")
+    if not fp.verified:
+        print("\n⚠️ NOT verified — selectors have not been confirmed against G0 recon.")
+        print("   Live purchasing is guardrail-blocked until recon selectors are filled in")
+        print("   and `verified: true` is set. Drills may still run for validation.")
+    return 0
+
+
+def cmd_learn_windows(args: argparse.Namespace) -> int:
+    from .dropwindows import learn_hot_hours, observed_first_seen_hours
+
+    db_path = Path(args.state_dir) / "state.sqlite"
+    hours = observed_first_seen_hours(db_path)
+    windows = learn_hot_hours(hours)
+    print(f"observed {len(hours)} sighting timestamps")
+    print(f"learned hot windows (local hours): {windows}")
+    print("apply by setting watch.hot_hours_local in targets.yaml to the above.")
     return 0
 
 
@@ -249,9 +386,40 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("status", help="gates 1.1/1.2: metrics from the state DB")
     sp.set_defaults(fn=cmd_status)
 
+    def add_buyer_args(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--targets", default=str(DEFAULT_TARGETS))
+        sp.add_argument("--flightplan", default=str(DEFAULT_FLIGHTPLAN))
+        sp.add_argument("--profile-dir", default=str(DEFAULT_PROFILE))
+        sp.add_argument("--browser-path", default=None)
+        sp.add_argument("--headed", action="store_true", help="show the browser window")
+
     sp = sub.add_parser("watch", help="run the detection loop")
-    sp.add_argument("--targets", default=str(DEFAULT_TARGETS))
+    add_buyer_args(sp)
     sp.set_defaults(fn=cmd_watch)
+
+    sp = sub.add_parser("drill", help="gates 2.1/2.2: rehearse the strike path")
+    add_buyer_args(sp)
+    sp.add_argument("--url", default=None, help="drill target product URL")
+    sp.set_defaults(fn=cmd_drill)
+
+    sp = sub.add_parser("session-check", help="gate 2.3/4.2: Apple ID session validity")
+    add_buyer_args(sp)
+    sp.set_defaults(fn=cmd_session_check)
+
+    sp = sub.add_parser("heartbeat", help="gate 4.1: watcher liveness")
+    add_buyer_args(sp)
+    sp.set_defaults(fn=cmd_heartbeat)
+
+    sp = sub.add_parser("race-ready", help="compute + log the operational SLO snapshot")
+    add_buyer_args(sp)
+    sp.set_defaults(fn=cmd_race_ready)
+
+    sp = sub.add_parser("flightplan", help="validate flightplan.yaml + show status")
+    sp.add_argument("--flightplan", default=str(DEFAULT_FLIGHTPLAN))
+    sp.set_defaults(fn=cmd_flightplan)
+
+    sp = sub.add_parser("learn-windows", help="gate 4.4: recompute hot hours from history")
+    sp.set_defaults(fn=cmd_learn_windows)
 
     return p
 

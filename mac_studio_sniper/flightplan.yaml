@@ -1,0 +1,103 @@
+# Checkout flightplan — the externalized strike script.
+#
+# STATUS: PLACEHOLDER (verified: false). Selectors below are educated
+# guesses seeded from Apple's data-autom conventions; they MUST be
+# replaced/confirmed with G0 recon output (`recon-checkout` selector
+# report) before this plan is trusted. While verified is false:
+#   - guardrails hard-block any live purchase
+#   - drills may run (that's how we validate the recon-derived plan)
+# Flip `verified: true` only after a drill passes with recon-confirmed
+# selectors (gate 2.1 starts its streak there).
+#
+# The supervisor's self-heal loop may patch selectors/expectations in this
+# file; it must never touch targets.yaml.
+
+version: 1
+verified: false
+notes: >
+  Seeded pre-recon. Every selector marked TODO-RECON needs confirmation
+  from the recon-checkout selector report.
+
+# Where the daily drill picks its cheap in-stock rehearsal target.
+drill_grid_url: "https://www.apple.com/shop/refurbished/accessories"
+
+# Selectors whose appearance mid-flow means Apple bounced us to sign-in
+# (session expired) — triggers the 2FA/relogin broker instead of a failure.
+signin_detect_selectors:
+  - "#sign-in"                      # TODO-RECON
+  - "[data-autom='signIn']"         # TODO-RECON
+
+session_check:
+  url: "https://www.apple.com/shop/bag"
+  signed_in_selectors:
+    - "[data-autom='sign-out']"     # TODO-RECON
+  signed_out_selectors:
+    - "[data-autom='sign-in']"      # TODO-RECON
+    - "#signIn"                     # TODO-RECON
+
+steps:
+  - id: product
+    action: goto
+    url: "{product_url}"
+    expect_selector: "[data-autom='add-to-cart']"    # TODO-RECON
+    timeout_ms: 15000
+
+  - id: add_to_bag
+    action: click
+    selectors:
+      - "[data-autom='add-to-cart']"                 # TODO-RECON
+      - "button[name='add-to-cart']"                 # TODO-RECON fallback
+    timeout_ms: 10000
+
+  - id: goto_bag
+    action: goto
+    url: "https://www.apple.com/shop/bag"
+    expect_selector: "[data-autom='checkout']"       # TODO-RECON
+    timeout_ms: 15000
+
+  - id: checkout
+    action: click
+    selectors:
+      - "[data-autom='checkout']"                    # TODO-RECON
+      - "#shoppingCart.actions.checkout"             # TODO-RECON fallback
+    expect_url: "checkout"
+    timeout_ms: 20000
+
+  - id: shipping_continue
+    action: click
+    selectors:
+      - "[data-autom='fulfillment-continue-button']" # TODO-RECON
+    optional: true                                    # saved-address flows may skip
+    timeout_ms: 15000
+
+  - id: payment_cvv
+    action: fill
+    selectors:
+      - "[data-autom='card-security-code']"          # TODO-RECON
+      - "input[name='cvv']"                          # TODO-RECON fallback
+    value: "{cvv}"
+    optional: true                                    # some saved-card flows don't ask
+    timeout_ms: 15000
+
+  - id: payment_continue
+    action: click
+    selectors:
+      - "[data-autom='payment-continue-button']"     # TODO-RECON
+    optional: true
+    timeout_ms: 15000
+
+  - id: review_order
+    action: assert
+    selectors:
+      - "[data-autom='place-order-button']"          # TODO-RECON
+    timeout_ms: 15000
+
+  # THE final step. Drill mode always stops before this; confirm mode asks
+  # the human first; full-auto requires every guardrail green.
+  - id: place_order
+    action: click
+    final: true
+    selectors:
+      - "[data-autom='place-order-button']"          # TODO-RECON
+    expect_url: "thankyou"                            # TODO-RECON
+    timeout_ms: 30000
