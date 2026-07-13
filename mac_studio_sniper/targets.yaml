@@ -1,0 +1,31 @@
+# The ONLY file that authorizes spending money. Human-edited only — the
+# supervisor may patch flightplan.yaml but never this file.
+#
+# Price caps are placeholders until gate 0.3 (grounded in observed refurb
+# listings). The matcher alerts on over-cap or spec-ambiguous tiles ONLY as
+# needs_verification matches; the buyer (Phase 2) refuses those entirely.
+
+stop_after_first_success: true
+quantity: 1
+mode: alert-only            # alert-only | confirm | full-auto (Phase 3+)
+confirm_timeout_s: 120
+realert_window_h: 24
+
+targets:
+  - name: "M3 Ultra 512GB"
+    priority: 1
+    match: { chip: "M3 Ultra", ram_gb: 512 }
+    max_price_usd: 8600     # VERIFY in gate 0.3
+  - name: "M3 Ultra 256GB"
+    priority: 2
+    match: { chip: "M3 Ultra", ram_gb: 256 }
+    max_price_usd: 6100     # VERIFY in gate 0.3
+
+watch:
+  endpoints:
+    - "https://www.apple.com/shop/refurbished/mac/mac-studio"
+  base_interval_s: 30
+  hot_interval_s: 10
+  # Local-time hours historically drop-prone (US refurb restocks skew
+  # early morning). The supervisor refines these from observed data (G4.4).
+  hot_hours_local: [[4, 8]]
