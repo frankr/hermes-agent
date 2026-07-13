@@ -8,6 +8,13 @@ criteria tied to the success gates in
 
 Status legend: 🔴 blocked on operator data · 🟡 ready to build · 🟢 done
 
+**Mirrored in Linear** — project *Mac Studio Refurb Sniper*
+([link](https://linear.app/buildwithspark/project/mac-studio-refurb-sniper-9cb16f24b86b)),
+team Buildwithspark. Ticket IDs: T1 = BUI-26, T2 = BUI-27, T3 = BUI-28,
+T4 = BUI-29, T5 = BUI-30, T6 = BUI-31, T7 = BUI-32, T8 = BUI-33,
+T9 = BUI-34, T10 = BUI-35, T11 = BUI-36, T12 = BUI-37. This file is
+authoritative if the two drift.
+
 Most tickets are **blocked on G0 recon** (the operator running
 `recon-grid` / `recon-checkout` from a residential machine). Once that data
 exists, the wiring tickets (T1–T3) unblock the rest and the system can go
