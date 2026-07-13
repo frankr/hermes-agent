@@ -110,6 +110,37 @@ def cmd_inject(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recon_grid(args: argparse.Namespace) -> int:
+    from .recon import run_grid_recon
+
+    return run_grid_recon(
+        url=args.url, out_dir=Path(args.out_dir), executable_path=args.browser_path
+    )
+
+
+def cmd_recon_checkout(args: argparse.Namespace) -> int:
+    from .recon import run_checkout_recon
+
+    return run_checkout_recon(
+        out_dir=Path(args.out_dir),
+        profile_dir=Path(args.profile_dir),
+        start_url=args.start_url,
+        executable_path=args.browser_path,
+    )
+
+
+def cmd_telegram_setup(args: argparse.Namespace) -> int:
+    import os
+
+    from .recon import run_telegram_setup
+
+    token = args.token or os.environ.get("SNIPER_TELEGRAM_BOT_TOKEN")
+    if not token:
+        print("pass --token or set SNIPER_TELEGRAM_BOT_TOKEN", file=sys.stderr)
+        return 1
+    return run_telegram_setup(token)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     db = StateDB(Path(args.state_dir) / "state.sqlite")
     summary = db.summary()
@@ -190,6 +221,30 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ram", type=int, default=None)
     sp.add_argument("--part", default=None)
     sp.set_defaults(fn=cmd_inject)
+
+    from .recon import DEFAULT_RECON_DIR, GRID_URL
+
+    sp = sub.add_parser("recon-grid", help="gates 0.1+0.3: automated grid capture & parse")
+    sp.add_argument("--url", default=GRID_URL)
+    sp.add_argument("--out-dir", default=str(DEFAULT_RECON_DIR))
+    sp.add_argument("--browser-path", default=None, help="chromium executable override")
+    sp.set_defaults(fn=cmd_recon_grid)
+
+    sp = sub.add_parser(
+        "recon-checkout",
+        help="gate 0.2: record selectors automatically while you walk one checkout",
+    )
+    sp.add_argument("--out-dir", default=str(DEFAULT_RECON_DIR))
+    sp.add_argument(
+        "--profile-dir", default=str(Path.home() / ".mac_studio_sniper" / "browser-profile")
+    )
+    sp.add_argument("--start-url", default="https://www.apple.com/shop/refurbished")
+    sp.add_argument("--browser-path", default=None)
+    sp.set_defaults(fn=cmd_recon_checkout)
+
+    sp = sub.add_parser("telegram-setup", help="discover chat id from bot token + test send")
+    sp.add_argument("--token", default=None)
+    sp.set_defaults(fn=cmd_telegram_setup)
 
     sp = sub.add_parser("status", help="gates 1.1/1.2: metrics from the state DB")
     sp.set_defaults(fn=cmd_status)
