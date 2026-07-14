@@ -7055,6 +7055,17 @@ def _define_discord_view_classes() -> None:
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
     global SparkThreadRenameView, SparkThreadRenameModal
 
+    modal_base = getattr(discord.ui, "Modal", None)
+    if modal_base is None:
+        class modal_base:  # type: ignore[no-redef]
+            """Small fallback for tests that stub discord.ui without Modal."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.children = []
+
+            def add_item(self, item: Any) -> None:
+                self.children.append(item)
+
     class SparkThreadRenameView(discord.ui.View):
         """Buttons for choosing a generated Spark-code thread name or custom."""
 
@@ -7135,7 +7146,7 @@ def _define_discord_view_classes() -> None:
             )
             await interaction.response.send_modal(modal)
 
-    class SparkThreadRenameModal(discord.ui.Modal):
+    class SparkThreadRenameModal(modal_base):
         """Custom thread-name submit path for /spark-rename-thread."""
 
         def __init__(self, adapter: "DiscordAdapter", channel: Any = None):
