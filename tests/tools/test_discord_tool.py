@@ -3,7 +3,7 @@
 import json
 import urllib.error
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -221,6 +221,55 @@ class TestDiscordServerValidation:
         assert "guild_id" in result["error"]
         assert "user_id" in result["error"]
         assert "role_id" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Action: rename_thread
+# ---------------------------------------------------------------------------
+
+class TestRenameThread:
+    @patch("tools.discord_tool._discord_request")
+    def test_renames_thread_with_explicit_name(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "11", "name": "old name", "type": 11},
+            {"id": "11", "name": "Disk resilience + worktree cleanup", "type": 11},
+        ]
+
+        result = json.loads(discord_core(
+            action="rename_thread",
+            channel_id="11",
+            name="Disk resilience + worktree cleanup",
+        ))
+
+        assert result == {
+            "success": True,
+            "thread_id": "11",
+            "name": "Disk resilience + worktree cleanup",
+        }
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/11", "test-token"),
+            call(
+                "PATCH",
+                "/channels/11",
+                "test-token",
+                body={"name": "Disk resilience + worktree cleanup"},
+            ),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rejects_non_thread_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "11", "name": "chat", "type": 0}
+
+        result = json.loads(discord_core(
+            action="rename_thread",
+            channel_id="11",
+            name="Disk resilience + worktree cleanup",
+        ))
+
+        assert result["error"] == "Channel 11 is not a Discord thread."
+        mock_req.assert_called_once_with("GET", "/channels/11", "test-token")
 
 
 # ---------------------------------------------------------------------------
@@ -593,14 +642,14 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {"fetch_messages", "search_members", "create_thread", "rename_thread"}
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread", "rename_thread"}
         assert actions == expected_admin
 
     def test_all_actions_covered(self):

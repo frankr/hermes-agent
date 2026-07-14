@@ -614,6 +614,20 @@ def _create_thread(
     })
 
 
+def _rename_thread(token: str, channel_id: str, name: str, **_kwargs: Any) -> str:
+    """Rename a Discord thread by its channel ID, never a parent channel."""
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if channel.get("type") not in {10, 11, 12}:
+        return json.dumps({"error": f"Channel {channel_id} is not a Discord thread."})
+
+    thread = _discord_request("PATCH", f"/channels/{channel_id}", token, body={"name": name})
+    return json.dumps({
+        "success": True,
+        "thread_id": thread["id"],
+        "name": thread.get("name"),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -644,11 +658,12 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "rename_thread": _rename_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "rename_thread"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -671,6 +686,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("rename_thread", "(channel_id, name)", "rename an existing Discord thread"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -692,6 +708,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "rename_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -851,7 +868,7 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "Thread name for create_thread or rename_thread.",
         },
         "limit": {
             "type": "integer",
@@ -1066,7 +1083,7 @@ def _run_discord_action(
 
 
 def discord_core(action: str, **kwargs) -> str:
-    """Execute a core Discord action (fetch_messages, search_members, create_thread)."""
+    """Execute a core Discord action (fetch, member lookup, create, rename)."""
     return _run_discord_action(action, _CORE_ACTIONS, "discord", **kwargs)
 
 
