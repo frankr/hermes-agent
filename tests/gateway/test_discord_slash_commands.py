@@ -1054,8 +1054,14 @@ def test_register_skill_command_is_flat_not_nested(adapter):
     )
 
 
-def test_register_skill_command_empty_skills_no_command(adapter):
-    """No /skill command should be registered when there are zero skills."""
+def test_register_skill_command_empty_skills_still_registers_command(adapter):
+    """Register /skill even when the startup catalog is empty.
+
+    Locally created/manual skills can appear after the Discord gateway has
+    already started. /reload-skills can refresh the in-process autocomplete
+    state, but it cannot add a brand-new Discord application command without
+    a tree sync, so the stable /skill entry must exist from startup.
+    """
     with patch(
         "hermes_cli.commands.discord_skill_commands_by_category",
         return_value=({}, [], 0),
@@ -1063,7 +1069,8 @@ def test_register_skill_command_empty_skills_no_command(adapter):
         adapter._register_slash_commands()
 
     tree = adapter._client.tree
-    assert "skill" not in tree.commands
+    assert "skill" in tree.commands
+    assert tree.commands["skill"].name == "skill"
 
 
 def test_register_skill_command_callback_dispatches_by_name(adapter):
