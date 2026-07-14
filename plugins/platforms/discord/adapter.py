@@ -4519,9 +4519,6 @@ class DiscordAdapter(BasePlatformAdapter):
             self._skill_group_reserved_names: set[str] = set(existing_names)
             self._refresh_skill_catalog_state()
 
-            if not self._skill_entries:
-                return
-
             async def _autocomplete_name(
                 interaction: "discord.Interaction", current: str,
             ) -> list:
