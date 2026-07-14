@@ -72,6 +72,73 @@ def _ensure_discord_mock():
         except Exception:
             pass
 
+    _discord = sys.modules.get("discord")
+    if _discord is not None:
+        ui = getattr(_discord, "ui", None)
+        if ui is None:
+            ui = SimpleNamespace()
+            _discord.ui = ui
+
+        if not hasattr(ui, "View"):
+            class _FakeView:
+                def __init__(self, timeout=None):
+                    self.timeout = timeout
+                    self.children = []
+
+                def add_item(self, item):
+                    self.children.append(item)
+
+                def clear_items(self):
+                    self.children.clear()
+
+            ui.View = _FakeView
+
+        if not hasattr(ui, "Button"):
+            class _FakeButton:
+                def __init__(self, *, label=None, style=None, custom_id=None, **_kwargs):
+                    self.label = label
+                    self.style = style
+                    self.custom_id = custom_id
+                    self.disabled = False
+                    self.callback = None
+
+            ui.Button = _FakeButton
+
+        if not hasattr(ui, "Modal"):
+            class _FakeModal:
+                def __init__(self, *, title=None, **_kwargs):
+                    self.title = title
+                    self.children = []
+
+                def add_item(self, item):
+                    self.children.append(item)
+
+            ui.Modal = _FakeModal
+
+        if not hasattr(ui, "TextInput"):
+            class _FakeTextInput:
+                def __init__(self, *, label=None, max_length=None, required=True, default="", **_kwargs):
+                    self.label = label
+                    self.max_length = max_length
+                    self.required = required
+                    self.default = default
+                    self.value = ""
+
+            ui.TextInput = _FakeTextInput
+
+        if not hasattr(ui, "button"):
+            ui.button = lambda **_kwargs: (lambda fn: fn)
+
+        if not hasattr(_discord, "ButtonStyle"):
+            _discord.ButtonStyle = SimpleNamespace(
+                primary=1,
+                secondary=2,
+                green=3,
+                grey=4,
+                red=5,
+                blurple=6,
+            )
+
 
 _ensure_discord_mock()
 
@@ -1145,3 +1212,230 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+# ------------------------------------------------------------------
+# /spark-rename-thread slash command
+# ------------------------------------------------------------------
+
+
+def _spark_task(task_id="wire-spark-rename-thread-into-real-disco-0001", title="Wire /spark-rename-thread into real Discord slash-command trigger path", status="in_progress"):
+    return {
+        "id": task_id,
+        "title": title,
+        "status": status,
+    }
+
+
+def _view_labels(view):
+    return [getattr(child, "label", "") for child in getattr(view, "children", [])]
+
+
+def _button_by_custom_id(view, custom_id):
+    for child in getattr(view, "children", []):
+        if getattr(child, "custom_id", "") == custom_id:
+            return child
+    raise AssertionError(f"missing button with custom_id={custom_id!r}")
+
+
+def _option_buttons(view):
+    return [
+        child
+        for child in getattr(view, "children", [])
+        if str(getattr(child, "custom_id", "")).startswith("spark_thread_rename:option:")
+    ]
+
+
+class _FakeRenameThread(_FakeThreadChannel):
+    def __init__(self, channel_id=200, name="old-thread-name", guild_name="TestGuild", parent_id=100):
+        super().__init__(channel_id=channel_id, name=name, guild_name=guild_name, parent_id=parent_id)
+        self.edit = AsyncMock()
+
+
+def _spark_interaction(channel):
+    return SimpleNamespace(
+        channel=channel,
+        channel_id=channel.id,
+        guild_id=getattr(getattr(channel, "guild", None), "id", None),
+        guild=getattr(channel, "guild", None),
+        user=SimpleNamespace(id=42, name="Frank", display_name="Frank"),
+        response=SimpleNamespace(
+            send_message=AsyncMock(),
+            send_modal=AsyncMock(),
+            edit_message=AsyncMock(),
+        ),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_registers_native_spark_rename_thread_slash_command(adapter):
+    adapter._handle_spark_thread_rename_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "spark-rename-thread" in adapter._client.tree.commands
+    interaction = _spark_interaction(_FakeRenameThread())
+
+    await adapter._client.tree.commands["spark-rename-thread"](interaction)
+
+    adapter._handle_spark_thread_rename_slash.assert_awaited_once_with(interaction)
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_initial_reply_has_three_options_plus_custom_and_does_not_rename(adapter):
+    thread = _FakeRenameThread()
+    interaction = _spark_interaction(thread)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(return_value=[_spark_task()])
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+
+    thread.edit.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    _, kwargs = interaction.response.send_message.await_args
+    assert kwargs["ephemeral"] is True
+    view = kwargs["view"]
+    assert len(_option_buttons(view)) == 3
+    assert _view_labels(view).count("Custom") == 1
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_option_button_renames_only_after_selection(adapter):
+    thread = _FakeRenameThread()
+    interaction = _spark_interaction(thread)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(return_value=[_spark_task()])
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+    view = interaction.response.send_message.await_args.kwargs["view"]
+    option = _option_buttons(view)[0]
+
+    click = _spark_interaction(thread)
+    await option.callback(click)
+
+    thread.edit.assert_awaited_once()
+    assert thread.edit.await_args.kwargs["name"] == getattr(option, "_spark_thread_name")
+    click.response.edit_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_custom_button_opens_modal_and_submit_renames(adapter):
+    thread = _FakeRenameThread()
+    interaction = _spark_interaction(thread)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(return_value=[_spark_task()])
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+    view = interaction.response.send_message.await_args.kwargs["view"]
+    custom = _button_by_custom_id(view, "spark_thread_rename:custom")
+
+    click = _spark_interaction(thread)
+    await custom.callback(click)
+
+    click.response.send_modal.assert_awaited_once()
+    modal = click.response.send_modal.await_args.args[0]
+    modal.name_input.default = "Frank chosen thread name"
+
+    submit = _spark_interaction(thread)
+    await modal.on_submit(submit)
+
+    thread.edit.assert_awaited_once_with(name="Frank chosen thread name", reason="Requested by Frank via /spark-rename-thread")
+    submit.response.send_message.assert_awaited_once()
+    assert submit.response.send_message.await_args.kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tasks", "expected"),
+    [
+        ([], "No active Spark-code task found"),
+        ([_spark_task(status="backlog")], "No active Spark-code task found"),
+        ([_spark_task(task_id="one"), _spark_task(task_id="two")], "Multiple active Spark-code tasks"),
+    ],
+)
+async def test_spark_rename_thread_refuses_active_task_ambiguity_without_renaming(adapter, tasks, expected):
+    thread = _FakeRenameThread()
+    interaction = _spark_interaction(thread)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(return_value=tasks)
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+
+    thread.edit.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    assert expected in interaction.response.send_message.await_args.args[0]
+    assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_refuses_board_lookup_failure_without_renaming(adapter):
+    thread = _FakeRenameThread()
+    interaction = _spark_interaction(thread)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(side_effect=RuntimeError("board down"))
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+
+    thread.edit.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    assert "Could not read Spark-code AgentBoard" in interaction.response.send_message.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_refuses_non_thread_context_without_renaming(adapter):
+    channel = _FakeTextChannel()
+    interaction = _spark_interaction(channel)
+    adapter._fetch_spark_thread_rename_tasks = AsyncMock(return_value=[_spark_task()])
+
+    await adapter._handle_spark_thread_rename_slash(interaction)
+
+    interaction.response.send_message.assert_awaited_once()
+    assert "only rename Discord threads" in interaction.response.send_message.await_args.args[0]
+    adapter._fetch_spark_thread_rename_tasks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_rejects_invalid_custom_name_without_renaming(adapter):
+    thread = _FakeRenameThread()
+    modal = adapter._build_spark_thread_rename_modal(thread)
+    modal.name_input.default = "   "
+    submit = _spark_interaction(thread)
+
+    await modal.on_submit(submit)
+
+    thread.edit.assert_not_awaited()
+    submit.response.send_message.assert_awaited_once()
+    assert "Enter a non-empty thread name" in submit.response.send_message.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_spark_rename_thread_fetch_uses_scoped_spark_code_board_route(adapter, monkeypatch):
+    urls = []
+
+    class _Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def json(self):
+            return [_spark_task()]
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def get(self, url, **_kwargs):
+            urls.append(url)
+            return _Response()
+
+    monkeypatch.setenv("SPARK_THREAD_RENAME_BOARD_URL", "https://board.example.test/root/")
+    adapter._spark_thread_rename_client_session_cls = lambda **_kwargs: _Session()
+
+    tasks = await adapter._fetch_spark_thread_rename_tasks()
+
+    assert tasks == [_spark_task()]
+    assert urls == ["https://board.example.test/root/api/boards/spark-code/tasks"]
+    assert "?board=" not in urls[0]
+    assert "/api/tasks" not in urls[0]

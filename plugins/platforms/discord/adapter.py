@@ -41,6 +41,12 @@ class _Snowflake:
         self.id = id
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+SPARK_THREAD_RENAME_BOARD_URL = "http://kai-mm.tail10d3ac.ts.net:8771"
+SPARK_THREAD_RENAME_BOARD_ID = "spark-code"
+SPARK_THREAD_RENAME_COMMAND_NAME = "spark-rename-thread"
+SPARK_THREAD_RENAME_ACTIVE_STATUSES = {"active", "in_progress"}
+SPARK_THREAD_RENAME_CUSTOM_ID_PREFIX = "spark_thread_rename"
+SPARK_THREAD_RENAME_MAX_NAME_LENGTH = 100
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -272,6 +278,74 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _normalize_spark_thread_name(value: str) -> str:
+    name = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))
+    name = re.sub(r"\s+", " ", name).strip()
+    return name[:SPARK_THREAD_RENAME_MAX_NAME_LENGTH]
+
+
+def _spark_thread_rename_tokens(value: str) -> List[str]:
+    stop_words = {
+        "to", "this", "from", "the", "current", "active", "task", "and",
+        "with", "for", "into", "real",
+    }
+    raw = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())
+    return [
+        token
+        for token in raw.split()
+        if token and token not in stop_words
+    ]
+
+
+def _spark_thread_rename_options(task: Dict[str, Any]) -> List[str]:
+    source = f"{task.get('title') or ''} {task.get('id') or ''}".strip()
+    tokens = _spark_thread_rename_tokens(source)
+    candidates = [
+        _normalize_spark_thread_name(" ".join(tokens[:5])),
+        _normalize_spark_thread_name(
+            " ".join(["rename", *[t for t in tokens if t != "rename"][:4]])
+        ),
+        _normalize_spark_thread_name(
+            " ".join([
+                "discord",
+                "thread",
+                *[t for t in tokens if t not in {"discord", "thread"}][:3],
+            ])
+        ),
+    ]
+    fallback_tokens = _spark_thread_rename_tokens(str(task.get("id") or "spark task"))
+    candidates.extend([
+        _normalize_spark_thread_name(" ".join(["spark", *fallback_tokens])),
+        _normalize_spark_thread_name(" ".join(["active", "task", *fallback_tokens])),
+        _normalize_spark_thread_name(" ".join(["task", "thread", *fallback_tokens])),
+    ])
+    unique: List[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+        if len(unique) == 3:
+            break
+    while len(unique) < 3:
+        unique.append(f"spark task {len(unique) + 1}")
+    return unique[:3]
+
+
+def _spark_thread_rename_button_label(name: str, index: int) -> str:
+    prefix = f"{index + 1}. "
+    return prefix + _truncate_discord_component_text(
+        name,
+        max(1, _DISCORD_BUTTON_LABEL_LIMIT - len(prefix)),
+    )
+
+
+def _is_spark_thread_renamable(channel: Any) -> bool:
+    if channel is None or discord is None:
+        return False
+    if not isinstance(channel, discord.Thread):
+        return False
+    return callable(getattr(channel, "edit", None))
 
 
 def check_discord_requirements() -> bool:
@@ -4206,6 +4280,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+        @tree.command(
+            name=SPARK_THREAD_RENAME_COMMAND_NAME,
+            description="Suggest Spark-code task names and rename this thread after selection",
+        )
+        async def slash_spark_rename_thread(interaction: discord.Interaction):
+            await self._handle_spark_thread_rename_slash(interaction)
+
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
@@ -4691,6 +4772,160 @@ class DiscordAdapter(BasePlatformAdapter):
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+
+    async def _handle_spark_thread_rename_slash(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        """Offer Spark-code task-derived names for the current Discord thread."""
+        if not await self._check_slash_authorization(
+            interaction, f"/{SPARK_THREAD_RENAME_COMMAND_NAME}",
+        ):
+            return
+
+        channel = getattr(interaction, "channel", None)
+        if not _is_spark_thread_renamable(channel):
+            await interaction.response.send_message(
+                "I can only rename Discord threads from inside a server thread.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            tasks = await self._fetch_spark_thread_rename_tasks()
+        except Exception:
+            logger.warning(
+                "[Discord] /spark-rename-thread could not read Spark-code AgentBoard",
+                exc_info=True,
+            )
+            await interaction.response.send_message(
+                "Could not read Spark-code AgentBoard. No thread was renamed.",
+                ephemeral=True,
+            )
+            return
+
+        active_tasks = [
+            task for task in tasks
+            if str(task.get("status") or "").strip() in SPARK_THREAD_RENAME_ACTIVE_STATUSES
+        ]
+        if not active_tasks:
+            await interaction.response.send_message(
+                "No active Spark-code task found. No thread was renamed.",
+                ephemeral=True,
+            )
+            return
+        if len(active_tasks) > 1:
+            await interaction.response.send_message(
+                "Multiple active Spark-code tasks found. No thread was renamed.",
+                ephemeral=True,
+            )
+            return
+
+        task = active_tasks[0]
+        options = _spark_thread_rename_options(task)
+        allowed_user_ids = set(getattr(self, "_allowed_user_ids", set()) or set())
+        invoker_id = getattr(getattr(interaction, "user", None), "id", None)
+        if invoker_id is not None:
+            allowed_user_ids.add(str(invoker_id))
+        view = SparkThreadRenameView(
+            self,
+            options,
+            allowed_user_ids,
+            getattr(self, "_allowed_role_ids", set()),
+        )
+        description = "\n".join(f"{index + 1}. {name}" for index, name in enumerate(options))
+        await interaction.response.send_message(
+            (
+                "Choose a new name for this Discord thread. "
+                "No rename happens until you select an option or submit Custom.\n\n"
+                f"{description}"
+            ),
+            view=view,
+            ephemeral=True,
+        )
+
+    async def _fetch_spark_thread_rename_tasks(self) -> List[Dict[str, Any]]:
+        """Fetch Spark-code tasks through the scoped AgentBoard route only."""
+        board_url = os.getenv(
+            "SPARK_THREAD_RENAME_BOARD_URL",
+            SPARK_THREAD_RENAME_BOARD_URL,
+        ).rstrip("/")
+        board_id = os.getenv(
+            "SPARK_THREAD_RENAME_BOARD_ID",
+            SPARK_THREAD_RENAME_BOARD_ID,
+        ).strip() or SPARK_THREAD_RENAME_BOARD_ID
+        url = f"{board_url}/api/boards/{board_id}/tasks"
+        session_cls = getattr(self, "_spark_thread_rename_client_session_cls", None)
+        session_kwargs: Dict[str, Any] = {}
+        if session_cls is None:
+            import aiohttp as _aiohttp
+            session_cls = _aiohttp.ClientSession
+            session_kwargs["timeout"] = _aiohttp.ClientTimeout(total=10)
+        async with session_cls(**session_kwargs) as session:
+            async with session.get(url) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(
+                        f"Spark-code AgentBoard lookup failed with HTTP {response.status}"
+                    )
+                payload = await response.json()
+        if not isinstance(payload, list):
+            return []
+        tasks: List[Dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            if not isinstance(item.get("id"), str):
+                continue
+            tasks.append({
+                "id": item.get("id"),
+                "title": item.get("title") if isinstance(item.get("title"), str) else "",
+                "status": item.get("status") if isinstance(item.get("status"), str) else "",
+            })
+        return tasks
+
+    def _build_spark_thread_rename_modal(self, channel: Any = None):
+        return SparkThreadRenameModal(self, channel)
+
+    async def _rename_spark_thread_from_interaction(
+        self,
+        interaction: discord.Interaction,
+        requested_name: str,
+        *,
+        edit_prompt_view: Any = None,
+        send_message: bool = False,
+    ) -> None:
+        channel = getattr(interaction, "channel", None)
+        if not _is_spark_thread_renamable(channel):
+            await interaction.response.send_message(
+                "I can only rename Discord threads from inside a server thread.",
+                ephemeral=True,
+            )
+            return
+
+        name = _normalize_spark_thread_name(requested_name)
+        if not name:
+            await interaction.response.send_message(
+                "Enter a non-empty thread name. No thread was renamed.",
+                ephemeral=True,
+            )
+            return
+
+        display_name = (
+            getattr(getattr(interaction, "user", None), "display_name", None)
+            or getattr(getattr(interaction, "user", None), "name", None)
+            or "unknown user"
+        )
+        await channel.edit(
+            name=name,
+            reason=f"Requested by {display_name} via /{SPARK_THREAD_RENAME_COMMAND_NAME}",
+        )
+        message = f"Renamed this thread to `{name}`."
+        if edit_prompt_view is not None:
+            await interaction.response.edit_message(content=message, view=edit_prompt_view)
+        elif send_message:
+            await interaction.response.send_message(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
     async def _dispatch_thread_session(
         self,
@@ -6818,6 +7053,111 @@ def _define_discord_view_classes() -> None:
     undefined, causing NameError on the first button interaction.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global SparkThreadRenameView, SparkThreadRenameModal
+
+    class SparkThreadRenameView(discord.ui.View):
+        """Buttons for choosing a generated Spark-code thread name or custom."""
+
+        def __init__(
+            self,
+            adapter: "DiscordAdapter",
+            options: List[str],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=_read_discord_prompt_timeout())
+            self.adapter = adapter
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+            for index, name in enumerate(options[:3]):
+                button = discord.ui.Button(
+                    label=_spark_thread_rename_button_label(name, index),
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"{SPARK_THREAD_RENAME_CUSTOM_ID_PREFIX}:option:{index}",
+                )
+                button._spark_thread_name = name
+                button.callback = self._make_option_callback(name)
+                self.add_item(button)
+
+            custom = discord.ui.Button(
+                label="Custom",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"{SPARK_THREAD_RENAME_CUSTOM_ID_PREFIX}:custom",
+            )
+            custom.callback = self._on_custom
+            self.add_item(custom)
+
+        def _check_auth(self, interaction: "discord.Interaction") -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        def _make_option_callback(self, name: str):
+            async def _callback(interaction: "discord.Interaction") -> None:
+                await self._choose(interaction, name)
+            return _callback
+
+        async def _choose(self, interaction: "discord.Interaction", name: str) -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This rename prompt has already been used.", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to rename this thread.", ephemeral=True,
+                )
+                return
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            await self.adapter._rename_spark_thread_from_interaction(
+                interaction,
+                name,
+                edit_prompt_view=self,
+            )
+
+        async def _on_custom(self, interaction: "discord.Interaction") -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This rename prompt has already been used.", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to rename this thread.", ephemeral=True,
+                )
+                return
+            modal = self.adapter._build_spark_thread_rename_modal(
+                getattr(interaction, "channel", None),
+            )
+            await interaction.response.send_modal(modal)
+
+    class SparkThreadRenameModal(discord.ui.Modal):
+        """Custom thread-name submit path for /spark-rename-thread."""
+
+        def __init__(self, adapter: "DiscordAdapter", channel: Any = None):
+            super().__init__(title="Custom Spark thread name")
+            self.adapter = adapter
+            self.channel = channel
+            self.name_input = discord.ui.TextInput(
+                label="Thread name",
+                max_length=SPARK_THREAD_RENAME_MAX_NAME_LENGTH,
+                required=True,
+            )
+            self.add_item(self.name_input)
+
+        async def on_submit(self, interaction: "discord.Interaction") -> None:
+            raw_name = getattr(self.name_input, "value", None) or getattr(
+                self.name_input, "default", "",
+            )
+            await self.adapter._rename_spark_thread_from_interaction(
+                interaction,
+                str(raw_name or ""),
+                send_message=True,
+            )
 
     class ExecApprovalView(discord.ui.View):
         """
