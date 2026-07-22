@@ -19,12 +19,22 @@ pip install httpx pyyaml curl_cffi        # NOTE: no playwright needed for watch
 
 ## Run the watcher
 
+**Quickest (foreground, to eyeball it):**
+
 ```bash
 python -m mac_studio_sniper watch \
     --targets mac_studio_sniper/targets.availability.yaml
 ```
 
-That's it. This config is deliberately broad — **no price cap, no RAM
+**Recommended for an always-on box** — install it as a managed service
+that starts on boot and restarts on crash:
+
+```bash
+./deploy/install.sh
+```
+
+See `deploy/README.md` for service management, logs, and macOS sleep
+settings. Either way, the config is deliberately broad — **no price cap, no RAM
 filter** — so you see every M3 Ultra that appears and get the full picture
 of cadence. It prints to the console; leave it running (a terminal, tmux,
 or `nohup … &`). Every sighting is logged to

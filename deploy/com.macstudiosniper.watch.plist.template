@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent for the Mac Studio availability watcher (macOS).
+     Installed by deploy/install.sh, which fills in __REPO_DIR__.
+     Manage with: launchctl {load,unload} ~/Library/LaunchAgents/com.macstudiosniper.watch.plist
+     KeepAlive restarts the watcher if it exits (the watchdog). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.macstudiosniper.watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO_DIR__/deploy/run-watch.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SNIPER_REPO_DIR</key>
+        <string>__REPO_DIR__</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.mac_studio_sniper/watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.mac_studio_sniper/watch.err.log</string>
+</dict>
+</plist>

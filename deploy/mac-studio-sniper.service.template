@@ -1,0 +1,21 @@
+# systemd user service for the Mac Studio availability watcher (Linux).
+# Installed by deploy/install.sh, which fills in __REPO_DIR__.
+# Manage with: systemctl --user {start,stop,status,restart} mac-studio-sniper
+#
+# Restart=always is the watchdog: a crashed watcher comes back within 5s.
+[Unit]
+Description=Mac Studio refurb availability watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=SNIPER_REPO_DIR=__REPO_DIR__
+ExecStart=/usr/bin/env bash __REPO_DIR__/deploy/run-watch.sh
+Restart=always
+RestartSec=5
+# Survive logout so it keeps running headless (pair with `loginctl
+# enable-linger $USER`, which install.sh runs for you).
+
+[Install]
+WantedBy=default.target
