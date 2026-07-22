@@ -125,6 +125,36 @@ class StateDB:
         self._conn.commit()
         return is_new
 
+    def sightings_matching(self, chip_substr: Optional[str] = None) -> list[dict]:
+        """All sightings, optionally filtered to a chip substring (e.g. 'M3 Ultra').
+
+        Answers the 'is it even showing up?' question directly from the log —
+        no matching / price caps involved. Newest first_seen last.
+        """
+        rows = self._conn.execute(
+            "SELECT part_number, title, chip, ram_gb, price_usd, url,"
+            " first_seen, last_seen, times_seen FROM sightings ORDER BY first_seen"
+        ).fetchall()
+        out = []
+        for r in rows:
+            chip = r[2] or ""
+            if chip_substr and chip_substr.lower() not in chip.lower():
+                continue
+            out.append(
+                {
+                    "part_number": r[0],
+                    "title": r[1],
+                    "chip": r[2],
+                    "ram_gb": r[3],
+                    "price_usd": r[4],
+                    "url": r[5],
+                    "first_seen": r[6],
+                    "last_seen": r[7],
+                    "times_seen": r[8],
+                }
+            )
+        return out
+
     # -- alerts --------------------------------------------------------------
 
     def recently_alerted(
@@ -266,6 +296,10 @@ class StateDB:
 
     def last_poll_ts(self) -> Optional[float]:
         row = self._conn.execute("SELECT MAX(ts) FROM polls WHERE ok = 1").fetchone()
+        return row[0] if row else None
+
+    def first_poll_ts(self) -> Optional[float]:
+        row = self._conn.execute("SELECT MIN(ts) FROM polls WHERE ok = 1").fetchone()
         return row[0] if row else None
 
     def record_race_ready(

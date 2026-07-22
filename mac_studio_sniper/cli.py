@@ -185,6 +185,43 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """Availability report: has the target chip shown up, and how often."""
+    import time as _time
+
+    db = StateDB(Path(args.state_dir) / "state.sqlite")
+    sightings = db.sightings_matching(chip_substr=args.chip)
+    label = args.chip or "all"
+    if not sightings:
+        print(f"No {label} sightings recorded yet.")
+        print("Keep the watcher running: python -m mac_studio_sniper watch \\")
+        print("    --targets mac_studio_sniper/targets.availability.yaml")
+        return 0
+    now = _time.time()
+    print(f"{label} sightings: {len(sightings)} distinct SKU(s)\n")
+    print(f"  {'part':14s} {'RAM':>5s} {'price':>10s}  {'seen':>4s}  first → last")
+    for s in sightings:
+        ram = f"{s['ram_gb']}GB" if s["ram_gb"] else "?"
+        price = f"${s['price_usd']:,.0f}" if s["price_usd"] is not None else "?"
+        first = _time.strftime("%m-%d %H:%M", _time.localtime(s["first_seen"]))
+        last = _time.strftime("%m-%d %H:%M", _time.localtime(s["last_seen"]))
+        age_h = (now - s["last_seen"]) / 3600
+        still = " (on page now)" if age_h < 0.2 else ""
+        print(f"  {s['part_number']:14s} {ram:>5s} {price:>10s}  {s['times_seen']:>4d}  {first} → {last}{still}")
+    # Cadence summary.
+    firsts = sorted(s["first_seen"] for s in sightings)
+    span_days = (firsts[-1] - firsts[0]) / 86400 if len(firsts) > 1 else 0
+    watching_days = (now - db.first_poll_ts()) / 86400 if db.first_poll_ts() else 0
+    print(
+        f"\n{len(firsts)} distinct SKU(s) first appeared over {span_days:.1f} day(s);"
+        f" watching for {watching_days:.1f} day(s)."
+    )
+    ultra_512 = [s for s in sightings if s["ram_gb"] == 512]
+    ultra_256 = [s for s in sightings if s["ram_gb"] == 256]
+    print(f"  512GB seen: {len(ultra_512)} SKU(s)   256GB seen: {len(ultra_256)} SKU(s)")
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     import asyncio
 
@@ -385,6 +422,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("status", help="gates 1.1/1.2: metrics from the state DB")
     sp.set_defaults(fn=cmd_status)
+
+    sp = sub.add_parser("report", help="availability: has the target shown up, how often")
+    sp.add_argument("--chip", default="M3 Ultra", help="chip substring filter (default: 'M3 Ultra')")
+    sp.set_defaults(fn=cmd_report)
 
     def add_buyer_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--targets", default=str(DEFAULT_TARGETS))

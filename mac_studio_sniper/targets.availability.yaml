@@ -1,0 +1,34 @@
+# AVAILABILITY-WATCH config — Phase 0/1 only.
+#
+# Purpose: prove that M3 Ultra Mac Studios actually show up, and learn how
+# often, BEFORE building any purchase machinery. Deliberately broad — no
+# price cap, no RAM filter — so you get pinged on EVERY M3 Ultra sighting
+# and the sightings log captures the full picture. Nothing here authorizes
+# spending; mode is alert-only and there is no buyer wired.
+#
+# When you're satisfied it's showing up, switch to the real targets.yaml
+# (specific RAM + price caps) and continue the build.
+
+mode: alert-only
+realert_window_h: 24
+
+targets:
+  # Specific configs first (so alerts name them), then a catch-all so no
+  # M3 Ultra slips through unflagged. No max_price_usd anywhere = never
+  # filtered by price.
+  - name: "M3 Ultra 512GB"
+    priority: 1
+    match: { chip: "M3 Ultra", ram_gb: 512 }
+  - name: "M3 Ultra 256GB"
+    priority: 2
+    match: { chip: "M3 Ultra", ram_gb: 256 }
+  - name: "M3 Ultra (any config)"
+    priority: 3
+    match: { chip: "M3 Ultra" }
+
+watch:
+  endpoints:
+    - "https://www.apple.com/shop/refurbished/mac/mac-studio"
+  base_interval_s: 30
+  hot_interval_s: 15
+  hot_hours_local: [[4, 8]]
