@@ -65,16 +65,31 @@ if [ "$OS" = "Linux" ]; then
   echo "    logs:   journalctl --user -u mac-studio-sniper -f"
 elif [ "$OS" = "Darwin" ]; then
   PLIST="$HOME/Library/LaunchAgents/com.macstudiosniper.watch.plist"
+  LABEL="com.macstudiosniper.watch"
+  UID_NUM="$(id -u)"
+  ERRLOG="$STATE_DIR/launchd-install.err"
   mkdir -p "$HOME/Library/LaunchAgents"
   sed -e "s#__REPO_DIR__#$REPO_DIR#g" -e "s#__HOME__#$HOME#g" \
     "$REPO_DIR/deploy/com.macstudiosniper.watch.plist.template" \
     > "$PLIST"
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
-  echo
-  echo "==> installed + started (launchd agent)."
+  # Modern bootout/bootstrap, tolerant of "not loaded" and of the legacy
+  # `launchctl load` returning non-zero (which under set -e silently killed
+  # a prior version of this script before it could report anything).
+  launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
+  : > "$ERRLOG"
+  if launchctl bootstrap "gui/$UID_NUM" "$PLIST" 2>>"$ERRLOG"; then
+    echo "==> installed + started (launchd agent, bootstrap)."
+  elif launchctl load "$PLIST" 2>>"$ERRLOG"; then
+    echo "==> installed + started (launchd agent, legacy load)."
+  else
+    echo "!! launchd could not start the agent. Details: $ERRLOG"
+    echo "   The plist is written at $PLIST. Try manually:"
+    echo "     launchctl bootstrap gui/$UID_NUM $PLIST"
+    echo "   Or just run it in the foreground / under tmux:"
+    echo "     SNIPER_REPO_DIR=$REPO_DIR bash $REPO_DIR/deploy/run-watch.sh"
+  fi
   echo "    logs:  tail -f $STATE_DIR/watch.log"
-  echo "    stop:  launchctl unload $PLIST"
+  echo "    stop:  launchctl bootout gui/$UID_NUM/$LABEL"
   echo
   echo "    NOTE: keep this Mac awake/plugged in, or it won't poll while asleep."
   echo "    Recommended: System Settings > Battery/Energy > prevent sleep on power,"
